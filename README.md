@@ -3,6 +3,8 @@
 Batch translate folder and file names into any language using Google Translate. A simple Windows utility with a GUI for renaming files and directories with automatic language detection.
 Built with Claude and Gemini.
 
+<img width="1202" height="1398" alt="Screenshot 2026-08-21 132828" src="https://github.com/user-attachments/assets/0c0ce387-e393-47d7-8d8e-c71552a62ac6" />
+
 ## ✨ Features
 
 - 🌍 **Translate Multiple Languages Together** — Arabic, Chinese, Dutch, English, Russian, Spanish, and more
