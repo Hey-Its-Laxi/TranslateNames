@@ -5,7 +5,7 @@ Built with Claude and Gemini.
 
 ## ✨ Features
 
-- 🌍 **20+ Languages Supported** — Arabic, Chinese, Dutch, English, French, German, Hindi, Italian, Japanese, Korean, Polish, Portuguese, Russian, Spanish, Swedish, Thai, Turkish, Vietnamese, and more
+- 🌍 **Translate Multiple Languages Together** — Arabic, Chinese, Dutch, English, Russian, Spanish, and more
 - 👁️ **Live Preview** — See all proposed renames before applying them
 - ✏️ **Edit & Customize** — Double-click any item to manually adjust the translated name
 - ↩️ **Undo Support** — Easily revert the last batch of renames
@@ -13,22 +13,21 @@ Built with Claude and Gemini.
 - 📋 **CSV Logging** — Generates a log of all renames for your records
 - 🚫 **Smart Filtering** — Skip files by extension or exclude items by regex pattern
 - 🔄 **Conflict Resolution** — Automatically appends `(1)`, `(2)`, etc. if names already exist
-- ⚙️ **Configurable** — Adjust translation delay, language detection, and recursion settings
+- ⚙️ **Configuration** — Adjust translation delay, language detection, and more
 - 🎯 **Batch Processing** — Handle hundreds of files at once
 
 ## 📋 Requirements
 
 - **Windows 10** or later
-- **PowerShell 3.0** or later (built-in with Windows 10+)
 - **Internet connection** (uses Google Translate API)
 
 ## 🚀 Installation
 
-1. Go to [Releases](../../releases) and download the latest `TranslateNames-v1.0.0.zip`
-2. Extract both files (`Translate.vbs` and `TranslateNamesApp.ps1`) to the same folder
+1. Download both Translate.vbs & TranslateNamesApp.ps1
+2. Place both files in the same folder
 3. Double-click `Translate.vbs` to launch the application
 
-**No installation required** — just extract and run!
+**No installation required**
 
 ## 📖 How to Use
 
@@ -72,7 +71,7 @@ Built with Claude and Gemini.
 
 ## 🎨 Customization
 
-The app automatically detects and applies your Windows theme (light or dark mode). No additional setup needed.
+The app automatically detects and applies your Windows theme (light or dark mode).
 
 ## ⚠️ Important Notes
 
@@ -127,7 +126,3 @@ Found a bug? Have a feature request? Feel free to open an issue or submit a pull
 ## 📞 Support
 
 For issues, questions, or suggestions, please visit the [Issues](../../issues) page.
-
----
-
-**Enjoy batch-translating your files!** 🚀
