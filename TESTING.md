@@ -1,11 +1,12 @@
 # Testing Translate Names against failure
 
-This folder ships two test tools besides the app:
+This folder ships these test tools besides the app:
 
 | File | Purpose |
 |---|---|
 | `TestCorpus.ps1` | Generates a hostile-but-valid corpus (names, folders, file types) plus `_meta\settings.json` + `_meta\cache.json` so apply/undo can be tested offline. |
 | `Run-CorpusTests.ps1` | Runs the whole failure suite against that corpus and writes `TestLab\last-run.txt`. |
+| `TestRegex.ps1` | Generates `RegexTest\`, the exclude-regex fixture (kept out of git: it needs an empty folder and a literal `.git`). `RegexTest.md` is the manual pass over it, with measured row counts. |
 
 Everything is written under `<workspace>\TestLab\`. The suite never touches your real folders: it copies the corpus into throw-away `work-*` trees first.
 
@@ -25,7 +26,7 @@ Everything is written under `<workspace>\TestLab\`. The suite never touches your
 
 ## What the suite already checks automatically
 
-1. **Offline self-test** (113 checks): safe names, reserved names, emoji truncation,
+1. **Offline self-test** (118 checks): safe names, reserved names, emoji truncation,
    Unicode/RTL/combining marks, release-tag segmentation, provider parsing,
    glossary, planner (collisions, chains, cycles, parent/child order),   planner speed at 5 000 rows (fails at 2 000 ms - the old quadratic scheduler needed
    more than 100 s), journal, corrupt settings/cache/journal, two-batch undo,
@@ -151,7 +152,7 @@ apply/undo run possible with **no network**.
 | Crash mid-apply | kill -Force | Journal replays; tree returns to baseline | suite |
 | Double launch | start twice | Second activates the first window (or starts if the lock is stale) | manual |
 | Provider auth failure | bad DeepL key | Fatal message "Authentication failed (HTTP 401/403)", scan stops | manual |
-| Provider throttling | many requests | Backoff on 429/503/HTML (about 5 s, 10 s, 20 s); a fourth event within two minutes stops the scan | manual |
+| Provider throttling | many requests | Backoff on 429/503/HTML (60 s, 2 min, then 3 min, capped); a fourth event within two minutes stops the scan | manual |
 | Provider timeout/offline | unplug network | Rows marked Failed, no renames, undo unaffected | manual |
 | Empty folder | empty dir | Preview says "Nothing matched", apply disabled | manual |
 | Invalid regex | `[` | Message box, scan does not start | manual |

@@ -115,7 +115,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:AppName    = 'Translate Names'
-$script:AppVersion = '2.8.1'
+$script:AppVersion = '2.8.8'
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 $script:ScriptDir  = Split-Path -Parent $script:ScriptPath
 # When started from TranslateNames.exe the launcher exports its own path, so
@@ -1226,6 +1226,27 @@ function Convert-NameCase {
     }
 }
 
+# A name that is already in the target language still obeys an explicit
+# capitalisation choice; "As returned" (or a mode that changes nothing) leaves
+# it alone. Returns '' when the name should stay exactly as it is.
+function Get-RecasedName {
+    param([string]$Base, [string]$Mode, [int]$MaxLength)
+    if ([string]::IsNullOrEmpty($Base)) { return '' }
+    $cased = Get-SafeFileName -Name (Convert-NameCase -Text $Base -Mode $Mode) -MaxLength $MaxLength
+    if ([string]::IsNullOrWhiteSpace($cased) -or $cased -ceq $Base) { return '' }
+    return $cased
+}
+
+# Short label for the Include button: files and folders are independent, so
+# the caption has to say which combination is active.
+function Get-IncludeLabel {
+    param([bool]$Files, [bool]$Folders)
+    if ($Files -and $Folders) { return 'Files + folders' }
+    if ($Files) { return 'Files only' }
+    if ($Folders) { return 'Folders only' }
+    return 'Nothing included'
+}
+
 function Expand-NameTemplate {
     param(
         [string]$Template,
@@ -1806,7 +1827,9 @@ function Get-ThrottleDecision {
     if ($count -ge $MaxThrottles) {
         return [pscustomobject]@{ Fatal = $true; DelayMs = 0 }
     }
-    $base = 5000.0
+    # A 429 from the free endpoint usually clears inside a minute; five seconds
+    # was short enough that the retry itself tripped the breaker.
+    $base = 60000.0
     if ($env:TRANSLATENAMES_TEST_THROTTLE_BASE_MS) {
         try {
             $override = [int]$env:TRANSLATENAMES_TEST_THROTTLE_BASE_MS
@@ -2292,6 +2315,27 @@ $script:ScanWorker = {
 
             $processed = Next-ProcessedCount
             $base = $candidate.Base
+
+            if ($Ctx.ListOnly) {
+                # The list pass: show every candidate under its current name and
+                # stop. Nothing is translated until Preview is pressed.
+                Publish-Message @{
+                    Kind        = 'Item'
+                    FullPath    = $candidate.FullName
+                    Root        = $candidate.Root
+                    RelativeDir = $candidate.RelativeDir
+                    Original    = $candidate.Name
+                    NewName     = $candidate.Name
+                    Extension   = $candidate.Extension
+                    IsContainer = $candidate.IsContainer
+                    Depth       = $candidate.Depth
+                    Detected    = ''
+                    State       = 'Queued'
+                    Processed   = $processed
+                }
+                continue
+            }
+
             $state = 'Preview'
             $detected = ''
             $newBase = $base
@@ -2372,8 +2416,17 @@ $script:ScanWorker = {
                         $state = 'Unchanged'
                     } elseif ($Ctx.SkipIfTargetLang -and $detected -and $Ctx.To -ne 'auto' -and
                               $detected.ToLowerInvariant() -eq $Ctx.To.ToLowerInvariant()) {
-                        $state = 'Unchanged'
-                        $newBase = $base
+                        # Already in the target language: the translation is
+                        # skipped, but an explicit capitalisation choice still
+                        # applies. "As returned" leaves the name alone, because
+                        # the conversion is a no-op there.
+                        $cased = Get-RecasedName -Base $base -Mode $Ctx.CaseMode -MaxLength $Ctx.MaxNameLength
+                        if ($cased) {
+                            $newBase = $cased
+                        } else {
+                            $state = 'Unchanged'
+                            $newBase = $base
+                        }
                     }
                 }
             }
@@ -2488,6 +2541,11 @@ function Invoke-SelfTest {
     Test-StringEqual 'upper case' (Convert-NameCase -Text 'hello' -Mode 'UPPER CASE') 'HELLO'
     Test-StringEqual 'lower case' (Convert-NameCase -Text 'HELLO' -Mode 'lower case') 'hello'
     Test-StringEqual 'unknown mode is a no-op' (Convert-NameCase -Text 'Hello' -Mode 'As returned') 'Hello'
+    Test-StringEqual 'target-language name still takes upper case' (Get-RecasedName -Base 'notes' -Mode 'UPPER CASE' -MaxLength 120) 'NOTES'
+    Test-StringEqual 'as-returned leaves a target-language name alone' (Get-RecasedName -Base 'notes' -Mode 'As returned' -MaxLength 120) ''
+    Test-StringEqual 'include label: both' (Get-IncludeLabel -Files $true -Folders $true) 'Files + folders'
+    Test-StringEqual 'include label: files' (Get-IncludeLabel -Files $true -Folders $false) 'Files only'
+    Test-StringEqual 'include label: folders' (Get-IncludeLabel -Files $false -Folders $true) 'Folders only'
 
     Write-Host "Unicode and emoji names"
     function New-Unicode {
@@ -2517,9 +2575,9 @@ function Invoke-SelfTest {
     Write-TestCheck 'typo message names the token' ([bool](@($tokenIssues | Where-Object { $_ -match '\{translatd\}' }).Count)) ($tokenIssues -join ' / ')
 
     Write-Host "Throttling policy"
-    Test-StringEqual 'first throttle backs off 5s' ([string](Get-ThrottleDecision -ThrottleCount 1).DelayMs) '5000'
-    Test-StringEqual 'second throttle backs off 10s' ([string](Get-ThrottleDecision -ThrottleCount 2).DelayMs) '10000'
-    Test-StringEqual 'third throttle backs off 20s' ([string](Get-ThrottleDecision -ThrottleCount 3).DelayMs) '20000'
+    Test-StringEqual 'first throttle backs off 60s' ([string](Get-ThrottleDecision -ThrottleCount 1).DelayMs) '60000'
+    Test-StringEqual 'second throttle backs off 2m' ([string](Get-ThrottleDecision -ThrottleCount 2).DelayMs) '120000'
+    Test-StringEqual 'third throttle is capped at 3m' ([string](Get-ThrottleDecision -ThrottleCount 3).DelayMs) '180000'
     Write-TestCheck 'fourth throttle trips the circuit breaker' ([bool](Get-ThrottleDecision -ThrottleCount 4).Fatal)
     Test-StringEqual 'backoff is capped at 3 minutes' ([string](Get-ThrottleDecision -ThrottleCount 8 -MaxThrottles 20).DelayMs) '180000'
     Write-TestCheck 'HTTP 429 is a throttle signal' ([bool](Test-ThrottleSignal -Status 429 -Message 'x'))
@@ -2905,7 +2963,7 @@ function Invoke-HeadlessPlan {
 
     $planInput = New-Object System.Collections.Generic.List[object]
     foreach ($item in $items) {
-        if ($item.State -eq 'Unchanged' -or $item.State -eq 'Failed') { continue }
+        if ($item.State -eq 'Unchanged' -or $item.State -eq 'Failed' -or $item.State -eq 'Queued') { continue }
         if ([string]::Equals([string]$item.NewName, [string]$item.Original, [StringComparison]::Ordinal)) { continue }
         $planInput.Add([pscustomobject]@{
             FullPath    = $item.FullPath
@@ -3229,27 +3287,29 @@ $cmbTranslit = New-ThemedCombo -Items @('Off', 'Append', 'Replace') -Selected ([
 
 $lblApiKey = New-ThemedLabel -Text 'DeepL key'
 
+$lblSource = New-ThemedLabel -Text 'From'
+$lblTarget = New-ThemedLabel -Text 'To'
+
 $options.Controls.Add((New-ThemedLabel -Text 'Provider'),        0, 0)
 $options.Controls.Add($cmbProvider,                              1, 0)
-$lblSource = New-ThemedLabel -Text 'Source language'
-$options.Controls.Add($lblSource,                                2, 0)
-$options.Controls.Add($cmbSource,                                3, 0)
+
+# The two limits take the right-hand cells of these rows; the languages stay
+# in the band above the grid, exactly as they do in Simple mode.
+$lblMaxLen   = New-ThemedLabel -Text 'Max name length'
+$lblDepth    = New-ThemedLabel -Text 'Max depth (0 = all)'
+$options.Controls.Add($lblMaxLen,                               2, 0)
+$options.Controls.Add($numMaxLen,                                3, 0)
 
 $options.Controls.Add($lblApiKey,                                0, 1)
 $options.Controls.Add($txtApiKey,                                1, 1)
-$lblTarget = New-ThemedLabel -Text 'Target language'
-$options.Controls.Add($lblTarget,                                2, 1)
-$options.Controls.Add($cmbTarget,                                3, 1)
+$options.Controls.Add($lblDepth,                                 2, 1)
+$options.Controls.Add($numDepth,                                 3, 1)
 
 $options.Controls.Add((New-ThemedLabel -Text 'Capitalisation'),  0, 2)
 $options.Controls.Add($cmbCase,                                  1, 2)
-$options.Controls.Add((New-ThemedLabel -Text 'Max name length'), 2, 2)
-$options.Controls.Add($numMaxLen,                                3, 2)
 
 $options.Controls.Add((New-ThemedLabel -Text 'Request delay ms'), 0, 3)
 $options.Controls.Add($numDelay,                                  1, 3)
-$options.Controls.Add((New-ThemedLabel -Text 'Max depth (0 = all)'), 2, 3)
-$options.Controls.Add($numDepth,                                  3, 3)
 
 $lblTemplate = New-ThemedLabel -Text 'Name template'
 $options.Controls.Add($lblTemplate,  0, 4)
@@ -3354,6 +3414,10 @@ $menuIncAdvanced.Add_Click({ $chkAdvanced.Checked = $true })
 $chkAdvanced = New-ThemedCheckBox -Text 'Advanced' -Checked $false
 $chkAdvanced.Anchor = 'Right'
 
+$modeRow.Controls.Add($lblSource,   0, 0)
+$modeRow.Controls.Add($cmbSource,   1, 0)
+$modeRow.Controls.Add($lblTarget,   2, 0)
+$modeRow.Controls.Add($cmbTarget,   3, 0)
 $modeRow.Controls.Add($btnInclude,  4, 0)
 $modeRow.Controls.Add($chkAdvanced, 5, 0)
 
@@ -3368,10 +3432,11 @@ $btnPreview = New-AccentButton -Text '&Preview translations' -Accent $script:Acc
 $btnApply   = New-AccentButton -Text '&Apply renames'        -Accent $script:AccentApply   -Width 150 -Disabled -FitText
 $btnUndo    = New-AccentButton -Text '&Undo last apply'      -Accent $script:AccentUndo    -Width 150 -Disabled -FitText
 $btnCancel  = New-AccentButton -Text 'Cancel'                -Accent $script:AccentNeutral -Width 100 -Disabled -FitText
+$btnClear   = New-AccentButton -Text 'C&lear list'           -Accent $script:AccentNeutral -Width 110 -FitText
 $btnGlossary = New-AccentButton -Text '&Help / Glossary'     -Accent $script:AccentNeutral -Width 150 -FitText
 $btnDefaults = New-AccentButton -Text 'De&faults'            -Accent $script:AccentNeutral -Width 110 -FitText
 
-foreach ($button in @($btnPreview, $btnApply, $btnUndo, $btnCancel, $btnGlossary, $btnDefaults)) {
+foreach ($button in @($btnPreview, $btnApply, $btnUndo, $btnCancel, $btnClear, $btnGlossary, $btnDefaults)) {
     [void]$actions.Controls.Add($button)
 }
 
@@ -3568,11 +3633,34 @@ $form.Add_HandleCreated({
 $script:UserMode     = 'Simple'
 $script:ModeUpdating = $false
 
+function Update-IncludeLabel {
+    if (-not $btnInclude) { return }
+    $btnInclude.Text = Get-IncludeLabel -Files ([bool]$chkFiles.Checked) -Folders ([bool]$chkFolders.Checked)
+    $btnInclude.AccessibleName = $btnInclude.Text
+}
+
 function Update-IncludeMenu {
     $menuIncFiles.Checked   = [bool]$chkFiles.Checked
     $menuIncFolders.Checked = [bool]$chkFolders.Checked
     $menuIncRecurse.Checked = [bool]$chkRecurse.Checked
     $menuIncHidden.Checked  = [bool]$chkHidden.Checked
+    Update-IncludeLabel
+}
+
+# Called with the option that was just cleared. When that would leave neither
+# selected, the *other* one is turned on instead: one click switches between
+# files, folders and both, and "neither" is never reachable. Re-checking the
+# same box just looked like the click did nothing.
+function Assert-IncludeChoice {
+    param([string]$Cleared = 'files')
+    if ([bool]$chkFiles.Checked -or [bool]$chkFolders.Checked) { return }
+    if ($Cleared -eq 'files') {
+        $chkFolders.Checked = $true
+        Set-Status 'Switched to folders so something is included.'
+    } else {
+        $chkFiles.Checked = $true
+        Set-Status 'Switched to files so something is included.'
+    }
 }
 
 # Grow the window so the auto-sized chrome and a usable results list fit, then
@@ -3611,33 +3699,9 @@ function Set-UiMode {
     $advanced = ([string]$Mode -eq 'Advanced')
     $script:UserMode = if ($advanced) { 'Advanced' } else { 'Simple' }
 
-    if ($advanced) {
-        if ($cmbSource.Parent -ne $options) {
-            [void]$modeRow.Controls.Remove($lblSource)
-            [void]$modeRow.Controls.Remove($cmbSource)
-            [void]$modeRow.Controls.Remove($lblTarget)
-            [void]$modeRow.Controls.Remove($cmbTarget)
-            $lblSource.Text = 'Source language'
-            $lblTarget.Text = 'Target language'
-            $options.Controls.Add($lblSource, 2, 0)
-            $options.Controls.Add($cmbSource, 3, 0)
-            $options.Controls.Add($lblTarget, 2, 1)
-            $options.Controls.Add($cmbTarget, 3, 1)
-        }
-    } else {
-        if ($cmbSource.Parent -ne $modeRow) {
-            [void]$options.Controls.Remove($lblSource)
-            [void]$options.Controls.Remove($cmbSource)
-            [void]$options.Controls.Remove($lblTarget)
-            [void]$options.Controls.Remove($cmbTarget)
-            $lblSource.Text = 'From'
-            $lblTarget.Text = 'To'
-            $modeRow.Controls.Add($lblSource, 0, 0)
-            $modeRow.Controls.Add($cmbSource, 1, 0)
-            $modeRow.Controls.Add($lblTarget, 2, 0)
-            $modeRow.Controls.Add($cmbTarget, 3, 0)
-        }
-    }
+    # Languages and limits keep the same homes in both modes: the languages in
+    # the top band (as in Simple) and the two limits in the grid's right column.
+    # Simple mode only hides the grid, so nothing has to move between modes.
 
     $options.Visible    = $advanced
     $filterRow.Visible  = $advanced
@@ -3669,13 +3733,6 @@ function Set-UiMode {
 
 # Drop a folder and translate: Simple mode starts the preview on the folder the
 # user deliberately picked (drop, Browse, typed path). Apply stays a click.
-function Start-PreviewIfSimple {
-    if ($script:UserMode -ne 'Simple') { return }
-    if ($script:Context -or $script:Job) { return }
-    if ([string]::IsNullOrWhiteSpace($txtPath.Text)) { return }
-    Start-Scan
-}
-
 #endregion
 
 #region ---------------------------------------------------------- Status and rows
@@ -3702,6 +3759,7 @@ $script:StateColors = @{
     'Error'     = @{ Back = $script:Theme.ErrorBg;     Fore = $script:Theme.ErrorFg }
     'Renamed'   = @{ Back = $script:Theme.SuccessBg;   Fore = $script:Theme.SuccessFg }
     'Restored'  = @{ Back = $script:Theme.ControlBack; Fore = $script:Theme.ControlFore }
+    'Queued'    = @{ Back = $script:Theme.ControlBack; Fore = $script:Theme.UnchangedFg }
 }
 
 function Set-RowState {
@@ -3930,7 +3988,7 @@ function Update-FinalPlan {
     }
 
     $applyRows = @($script:PreviewItems | Where-Object {
-        $_.Tag.BaseState -ne 'Unchanged' -and $_.Tag.BaseState -ne 'Failed' -and $_.Tag.State -ne 'Renamed'
+        $_.Tag.BaseState -ne 'Unchanged' -and $_.Tag.BaseState -ne 'Failed' -and $_.Tag.BaseState -ne 'Queued' -and $_.Tag.State -ne 'Renamed'
     })
 
     $script:FinalPlan = @()
@@ -4509,12 +4567,13 @@ function Set-BusyState {
     $btnPreview.Enabled = -not $Busy
     $btnBrowse.Enabled  = -not $Busy
     $btnCancel.Enabled  = $Busy
+    if ($btnClear) { $btnClear.Enabled = -not $Busy }
     if ($Busy) {
         $btnApply.Enabled = $false
         $btnUndo.Enabled  = $false
     } else {
         $pending = @($script:PreviewItems | Where-Object {
-            $_.Tag.BaseState -ne 'Unchanged' -and $_.Tag.BaseState -ne 'Failed' -and $_.Tag.State -ne 'Renamed'
+            $_.Tag.BaseState -ne 'Unchanged' -and $_.Tag.BaseState -ne 'Failed' -and $_.Tag.BaseState -ne 'Queued' -and $_.Tag.State -ne 'Renamed'
         }).Count
         $btnApply.Enabled = ($pending -gt 0)
         $btnUndo.Enabled  = ($script:UndoJournal.Count -gt 0)
@@ -4536,6 +4595,7 @@ function Complete-Scan {
 
     $fatal = if ($script:Context) { $script:Context.FatalError } else { $null }
     $cancelled = if ($script:Context) { [bool]$script:Context.Cancel } else { $false }
+    $listOnly = if ($script:Context) { [bool]$script:Context.ListOnly } else { $false }
 
     Update-FinalPlan
     Update-ResultsView
@@ -4549,6 +4609,8 @@ function Complete-Scan {
         [void](Show-Message -Text $fatal -Title 'Translation stopped' -Icon 'Warning')
     } elseif ($cancelled) {
         Set-Status ("Cancelled after {0} item(s)." -f $script:PreviewItems.Count)
+    } elseif ($listOnly) {
+        Set-Status ("{0} item(s) listed. Press Preview translations (F5) to translate them." -f $script:PreviewItems.Count)
     }
 
     if ($script:Warnings.Count -gt 0) {
@@ -4615,7 +4677,31 @@ $timerDrain.Add_Tick({
     }
 })
 
+function Clear-Queue {
+    # Empty the queue and the list. Nothing on disk is touched.
+    if ($script:Context -or $script:Job) { return }
+    $script:ScanRoots = @()
+    $script:PreviewItems.Clear()
+    Clear-ResultsView
+    $script:FinalPlan = @()
+    $script:PlanIndex = $null
+    $script:ScanTotal = 0
+    $script:ScanProcessed = 0
+    $script:ScanFinished = $false
+    $script:SortColumn = -1
+    $txtPath.Text = ''
+    $progress.Value = 0
+    # Update-Counts owns the empty-state message ("No items in the queue.").
+    Update-Counts
+    Update-ActionState
+}
+
 function Start-Scan {
+    # -ListOnly enumerates what is there and fills the list without asking the
+    # provider anything, so a drop shows its contents before any request is
+    # spent.
+    param([switch]$ListOnly)
+
     # One job at a time. A second scan would replace the context the running
     # workers still publish to and leave them unreachable.
     if ($script:Context -or $script:Job) { return }
@@ -4627,7 +4713,9 @@ function Start-Scan {
     elseif (-not [string]::IsNullOrWhiteSpace($rootPath)) { $roots = @($rootPath) }
     $roots = @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) })
     if ($roots.Count -eq 0) {
-        [void](Show-Message -Text 'Pick a folder that exists before running a preview.' -Title 'No folder' -Icon 'Warning')
+        if (-not $ListOnly) {
+            [void](Show-Message -Text 'Pick a folder that exists before running a preview.' -Title 'No folder' -Icon 'Warning')
+        }
         return
     }
     $folderRoots = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
@@ -4637,7 +4725,7 @@ function Start-Scan {
         $reason = Get-ProtectedRootReason -Path $folderRoot
         if ($reason) { $protected.Add(('{0} is {1}' -f $folderRoot, $reason)) }
     }
-    if ($protected.Count -gt 0) {
+    if ($protected.Count -gt 0 -and -not $ListOnly) {
         $prompt = (($protected -join "`r`n") + "`r`n`r`nRenaming files there can break Windows or installed applications. Continue only if you really mean it.")
         if ((Show-Message -Text $prompt -Title 'System folder' -Buttons 'YesNo' -Icon 'Warning') -ne [System.Windows.Forms.DialogResult]::Yes) {
             $txtPath.Focus()
@@ -4662,20 +4750,20 @@ function Start-Scan {
         [void](Show-Message -Text 'Pick a real target language. Auto-detect only makes sense as a source.' -Title 'Invalid target' -Icon 'Warning')
         return
     }
-    if (([string]$cmbProvider.SelectedItem) -eq 'DeepL' -and [string]::IsNullOrWhiteSpace($txtApiKey.Text)) {
+    if (-not $ListOnly -and ([string]$cmbProvider.SelectedItem) -eq 'DeepL' -and [string]::IsNullOrWhiteSpace($txtApiKey.Text)) {
         [void](Show-Message -Text 'DeepL needs an auth key. Paste one, or switch the provider back to Google.' -Title 'No API key' -Icon 'Warning')
         return
     }
 
     $templateIssues = @(Get-NameTemplateIssues -Template $txtTemplate.Text)
-    if ($templateIssues.Count -gt 0) {
+    if ($templateIssues.Count -gt 0 -and -not $ListOnly) {
         $prompt = "The name template has a problem:`r`n - " + ($templateIssues -join "`r`n - ") + "`r`n`r`nPreview will show the result. Continue?"
         if ((Show-Message -Text $prompt -Title 'Name template' -Buttons 'YesNo' -Icon 'Warning') -ne [System.Windows.Forms.DialogResult]::Yes) {
             $txtTemplate.Focus()
             return
         }
     }
-    if ([string]::IsNullOrWhiteSpace($txtExcludeFolders.Text)) {
+    if ([string]::IsNullOrWhiteSpace($txtExcludeFolders.Text) -and -not $ListOnly) {
         # The defaults exist for a reason: removing them can make the app walk
         # into node_modules or a version-control store. Make that deliberate.
         $prompt = "Skip folders is empty, so node_modules, .git, `$RECYCLE.BIN and similar folders will be included.`r`n`r`nContinue?"
@@ -4685,10 +4773,12 @@ function Start-Scan {
         }
     }
 
-    Save-CurrentSettings
-    $script:Glossary = Import-Glossary
-    # The cache is only needed from here on, not to draw the window.
-    Initialize-TranslationCache
+    if (-not $ListOnly) {
+        Save-CurrentSettings
+        $script:Glossary = Import-Glossary
+        # The cache is only needed from here on, not to draw the window.
+        Initialize-TranslationCache
+    }
 
     $anchor = if ($folderRoots.Count -gt 0) { [string]$folderRoots[0] } else { Split-Path -Parent ([string]$roots[0]) }
     if (-not $anchor) { $anchor = [string]$roots[0] }
@@ -4722,6 +4812,7 @@ function Start-Scan {
 
     $script:Context = [hashtable]::Synchronized(@{
         Roots            = $roots
+        ListOnly         = [bool]$ListOnly
         MultiRoot        = [bool]$script:ScanMultiRoot
         Recurse          = [bool]$chkRecurse.Checked
         IncludeFiles     = [bool]$chkFiles.Checked
@@ -5774,6 +5865,7 @@ function Set-FolderPath {
 #region ---------------------------------------------------------- Event wiring
 
 $btnPreview.Add_Click({ Start-Scan })
+$btnClear.Add_Click({ Clear-Queue })
 $btnApply.Add_Click({ Start-ApplyJob })
 $btnUndo.Add_Click({ Start-UndoJob })
 
@@ -5787,8 +5879,10 @@ $btnCancel.Add_Click({
 $btnBrowse.Add_Click({
     $selected = Select-FolderDialog -Initial $txtPath.Text
     if ($selected) {
+        # Selecting a folder lists its contents without spending requests;
+        # translating still waits for Preview/F5.
         Set-FolderPath $selected
-        Start-PreviewIfSimple
+        Start-Scan -ListOnly
     }
 })
 
@@ -5797,7 +5891,7 @@ $txtPath.Add_SelectedIndexChanged({
     $selected = [string]$txtPath.SelectedItem
     if ($selected) {
         Set-FolderPath $selected
-        Start-PreviewIfSimple
+        Start-Scan -ListOnly
     }
 })
 
@@ -5805,7 +5899,7 @@ $txtPath.Add_KeyDown({
     param($sender, $e)
     if ($e.KeyCode -eq 'Enter') {
         Set-FolderPath $txtPath.Text
-        Start-PreviewIfSimple
+        Start-Scan -ListOnly
         $e.Handled = $true
         $e.SuppressKeyPress = $true
     }
@@ -5818,12 +5912,24 @@ $chkAdvanced.Add_CheckedChanged({
 
 $menuIncFiles.Add_Click({
     $chkFiles.Checked = $menuIncFiles.Checked
+    Assert-IncludeChoice -Cleared 'files'
     Update-IncludeMenu
 })
 $menuIncFolders.Add_Click({
     $chkFolders.Checked = $menuIncFolders.Checked
+    Assert-IncludeChoice -Cleared 'folders'
     Update-IncludeMenu
 })
+
+# The Advanced checkboxes are the same two choices, so they get the same guard.
+foreach ($chkInclude in @($chkFiles, $chkFolders)) {
+    $chkInclude.Add_CheckedChanged({
+        if ($script:ModeUpdating) { return }
+        $cleared = if ($this -eq $chkFolders) { 'folders' } else { 'files' }
+        Assert-IncludeChoice -Cleared $cleared
+        Update-IncludeMenu
+    })
+}
 $menuIncRecurse.Add_Click({
     $chkRecurse.Checked = $menuIncRecurse.Checked
     Update-IncludeMenu
@@ -5976,8 +6082,9 @@ $form.Add_DragDrop({
     # One folder behaves as before; several folders and files are queued
     # together, so a multi-selection in Explorer is one preview.
     Set-ScanRoots -Paths ([string[]]$paths)
-    # Set-ScanRoots no-ops while a job runs, and so does Start-PreviewIfSimple.
-    Start-PreviewIfSimple
+    # A drop lists the contents right away (no requests are sent) and leaves
+    # the translation itself to Preview/F5.
+    Start-Scan -ListOnly
 })
 
 $form.Add_KeyDown({
@@ -6143,10 +6250,9 @@ Apply-ColumnWidths $script:Settings.ColumnWidths
 Set-UiMode -Mode ([string]$script:Settings.UiMode) -NoFit
 
 if ($InitialPath) {
+    # Context menu or command line with a folder: load it, but leave the scan
+    # to the user (F5 or Preview translations).
     Set-FolderPath $InitialPath
-    # Launched from the context menu with a folder: Simple mode goes straight
-    # to the preview, which is the whole point of that verb.
-    Start-PreviewIfSimple
 } elseif ($script:Settings.LastFolder -and (Test-Path -LiteralPath ([string]$script:Settings.LastFolder) -PathType Container)) {
     $txtPath.Text = [string]$script:Settings.LastFolder
 }
@@ -6257,8 +6363,9 @@ if ($env:TRANSLATENAMES_SMOKE_SETTINGS) {
         Set-UiMode -Mode 'Advanced' -NoFit
         $checks.Add('advancedOptionsVisible=' + [bool]$options.Visible)
         $checks.Add('advancedFilterVisible=' + [bool]$filterRow.Visible)
-        $checks.Add('advancedTargetInGrid=' + [bool]($cmbTarget.Parent -eq $options))
-        $checks.Add('advancedSourceInGrid=' + [bool]($cmbSource.Parent -eq $options))
+        $checks.Add('advancedTargetInHeader=' + [bool]($cmbTarget.Parent -eq $modeRow))
+        $checks.Add('advancedSourceInHeader=' + [bool]($cmbSource.Parent -eq $modeRow))
+        $checks.Add('advancedLimitsInGrid=' + [bool](($numMaxLen.Parent -eq $options) -and ($numDepth.Parent -eq $options)))
         $checks.Add('advancedIncludeHidden=' + (-not [bool]$btnInclude.Visible))
         $form.PerformLayout()
         $advancedRows = $root.GetRowHeights()
@@ -6439,15 +6546,33 @@ if ($env:TRANSLATENAMES_SMOKE_APPLY) {
         $form.Opacity = 0.01
         $form.Show()
         [System.Windows.Forms.Application]::DoEvents()
+        # Mode checks need both layouts in one run, without saving either.
+        if ($env:TRANSLATENAMES_SMOKE_MODE) { Set-UiMode -Mode ([string]$env:TRANSLATENAMES_SMOKE_MODE) }
+
+        # Layout checks need to look at the window at sizes other than the one it
+        # was saved at, in particular its own minimum width.
+        if ($env:TRANSLATENAMES_SMOKE_SIZE) {
+            $sizeParts = $env:TRANSLATENAMES_SMOKE_SIZE -split 'x'
+            if ($sizeParts.Count -eq 2) {
+                $form.ClientSize = New-Object System.Drawing.Size([int]$sizeParts[0], [int]$sizeParts[1])
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+
         if ($env:TRANSLATENAMES_SMOKE_FOLDER) {
             # A semicolon-separated list exercises the multi-select queue.
             $smokeRoots = @($env:TRANSLATENAMES_SMOKE_FOLDER -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($smokeRoots.Count -gt 1) { Set-ScanRoots -Paths $smokeRoots } else { Set-FolderPath $smokeRoots[0] }
         }
 
+        # List-only automation: fill the rows without sending anything, so the
+        # "show me the files first" behaviour can be checked end to end.
+        $isList = [bool]$env:TRANSLATENAMES_SMOKE_LIST
         if ($isUndo) {
             Refresh-UndoState
             Start-UndoJob
+        } elseif ($isList) {
+            Start-Scan -ListOnly
         } else {
             Start-Scan
         }
@@ -6459,7 +6584,7 @@ if ($env:TRANSLATENAMES_SMOKE_APPLY) {
             Start-Sleep -Milliseconds 25
         }
 
-        if (-not $isUndo -and -not $script:Context -and -not $script:Job -and $script:PreviewItems.Count -gt 0) {
+        if (-not $isUndo -and -not $isList -and -not $script:Context -and -not $script:Job -and $script:PreviewItems.Count -gt 0) {
             Start-ApplyJob
             while ((($script:Context) -or ($script:Job)) -and $guard -lt ($maxSteps * 2)) {
                 $guard++
@@ -6512,6 +6637,24 @@ if ($env:TRANSLATENAMES_SMOKE_APPLY) {
             }
         }
 
+        # Clear-button check: empties the queue and the rows, touches no files.
+        if ($env:TRANSLATENAMES_SMOKE_CLEAR) { Clear-Queue }
+
+        # Include-guard check: uncheck both boxes the way a user would and make
+        # sure one comes back, then let the report show the resulting caption.
+        if ($env:TRANSLATENAMES_SMOKE_INCLUDE) {
+            $probeSaved = @([bool]$chkFiles.Checked, [bool]$chkFolders.Checked)
+            $chkFiles.Checked = $false
+            $chkFolders.Checked = $false
+            Update-IncludeMenu
+            $script:IncludeProbe = '{0}/{1} ({2})' -f $chkFiles.Checked, $chkFolders.Checked, $btnInclude.Text
+            # Put the real settings back: a probe must never be saved as the
+            # user's choice, which is exactly what happened once.
+            $chkFiles.Checked = $probeSaved[0]
+            $chkFolders.Checked = $probeSaved[1]
+            Update-IncludeMenu
+        }
+
         if ($smokeLog) {
             $form.PerformLayout()
             $rowHeights = $root.GetRowHeights()
@@ -6525,6 +6668,8 @@ if ($env:TRANSLATENAMES_SMOKE_APPLY) {
                 ('client=' + $form.ClientSize.Width + 'x' + $form.ClientSize.Height)
                 ('rows=' + ($rowHeights -join ','))
                 ('pathRow=' + $pathRow.Height + ' options=' + $options.Height + ' actions=' + $actions.Height)
+                ('modeRow=' + $modeRow.Width + 'x' + $modeRow.PreferredSize.Width + ' include=' + $btnInclude.Width + ' advRight=' + ($chkAdvanced.Left + $chkAdvanced.Width))
+                ('includeFiles=' + $chkFiles.Checked + ' includeFolders=' + $chkFolders.Checked + ' includeText=' + $btnInclude.Text + ' includeProbe=' + [string]$script:IncludeProbe)
                 ('statusLabel=' + $lblStatus.Height + '/' + $lblStatus.PreferredHeight)
                 ('hintLabel=' + $lblHint.Height + '/' + $lblHint.PreferredHeight)
                 ('previewBtn=' + $btnPreview.Height + '/' + $btnPreview.PreferredSize.Height)

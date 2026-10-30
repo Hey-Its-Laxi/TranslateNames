@@ -1,5 +1,99 @@
 # Translate Names - changelog
 
+## 2.8.8 - 2026-10-30
+
+The Advanced band keeps the language pair after all.
+
+- **Source/target no longer move into the grid.** 2.8.7 moved them down and put
+  the two limits in the band above; the band is the same height either way, so
+  the wrong pair moved. The languages now stay in the band in both modes, and
+  `Max name length` / `Max depth` take the grid cells they used to occupy
+  (right column, rows 1 and 2). Nothing moves when the mode changes - Simple
+  only hides the grid.
+
+## 2.8.7 - 2026-10-30
+
+Advanced mode stops wasting its top band.
+
+- **Max length and Max depth move up.** Advanced mode moves the source/target
+  pair into the options grid, which left a band across the top holding nothing
+  but the Advanced checkbox. `Max length` and `Max depth` now sit in that band
+  instead, and go back into the grid in Simple mode (where it is hidden).
+- **A list-only pass no longer invents targets.** The GUI plan builder did not
+  skip `Queued` rows, so a drop could show collision-suffixed names under
+  *Final target* before anything had been translated. It skips them now, so the
+  column stays empty and Apply stays disabled until Preview runs.
+
+## 2.8.6 - 2026-10-30
+
+Back to the one-click include switch, and a probe bug fixed.
+
+- **Clearing the last include option selects the other one.** 2.8.5 re-checked
+  the box that had just been cleared, so switching from folders to files took
+  several clicks and looked like nothing happened. Clearing the active box now
+  turns the other one on, so files, folders and both are one click apart.
+- **A test probe could leave `Include files` off.** The smoke hook that
+  exercises that guard wrote its final state into `settings.json`, which made
+  the drop listing come up empty (0 items) for a folder of files. The probe now
+  restores the real settings before the window closes.
+
+## 2.8.5 - 2026-10-30
+
+The Include menu can no longer end up excluding everything.
+
+- **"Neither" is impossible.** Unchecking the last of files/folders puts it
+  straight back - in the Include menu and in the Advanced checkboxes, which are
+  the same two choices - with a one-line note in the status bar. Before, both
+  could be off and the scan refused them only after Preview was pressed.
+- **The button says what is active:** `Files + folders`, `Files only`,
+  `Folders only`. It still opens the same menu; hidden and subfolders remain
+  independent of that choice.
+- Tests: three new self-test checks for the caption (118 total).
+
+## 2.8.4 - 2026-10-30
+
+Capitalisation now reaches names that are not translated.
+
+- **Already-English names take the case too.** With a capitalisation mode set,
+  a name that is skipped because it is already in the target language kept its
+  original casing (`notes.txt` stayed `notes.txt` while everything else became
+  `NOTES.txt`). The skip branch overwrote the converted name with the original;
+  it now keeps the converted one when it differs. "As returned" is still a
+  no-op for those rows, so nothing changes unless a mode is chosen.
+- Tests: two new self-test checks for the folded name (115 total).
+
+## 2.8.3 - 2026-10-30
+
+Two gaps from actually using 2.8.2 on a real folder.
+
+- **The list fills in on drop.** Dropping a folder (or picking one, or typing
+  a path and pressing Enter) now enumerates it immediately and shows every
+  entry under its current name, marked `Queued`. That pass is local: it sends
+  no request, writes no cache, and takes about a second. Pressing Preview/F5
+  replaces the rows with the translated ones.
+- **Clear list.** A new `Clear list` button next to Cancel empties the queue,
+  the rows and the plan - including a multi-folder queue - without touching
+  anything on disk. It is disabled while a job runs; Cancel stops the job.
+- Fixes a regression from 2.8.2 where the drop handler removed the auto-start
+  but left the list empty, so a drop looked like it had done nothing.
+
+## 2.8.2 - 2026-10-30
+
+A drop no longer translates on its own, and a throttled network is waited out
+instead of ending the scan.
+
+- **Nothing is sent until you ask.** Dropping a folder, picking one with
+  Browse, choosing a recent path or launching with a folder now only loads it;
+  the status line points at Preview translations (F5). Simple mode used to
+  start the scan on the drop itself, spending requests before the languages and
+  filters could be checked.
+- **Throttling is ridden out.** A 429 now pauses 60 s instead of 5 s, then 2
+  minutes, then 3 (capped), before the breaker stops the scan. The old 5/10/20
+  second ladder gave up after roughly 35 seconds - often shorter than the burst
+  limit it was waiting for.
+- Tests: the self-test throttle expectations follow the new ladder, and the
+  suite's synthetic 429 test still drives the scan to a clean stop.
+
 ## 2.8.1 - 2026-10-28
 
 Two bugs, both of the "you only notice when it bites" kind.

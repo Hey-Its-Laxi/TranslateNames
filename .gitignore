@@ -5,6 +5,7 @@ dist-cli/
 
 # Test lab: the corpus is generated, the rest is scratch
 TestLab/
+RegexTest/
 work-*/
 data-*/
 edit-rows/
