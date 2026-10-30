@@ -1,0 +1,21 @@
+# Build output
+dist/
+dist-cli/
+*.exe
+
+# Test lab: the corpus is generated, the rest is scratch
+TestLab/
+work-*/
+data-*/
+edit-rows/
+
+# Local state
+*.portable
+TranslateNamesData/
+Archil/node_modules/
+Archil/.env
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.vscode/
